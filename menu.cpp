@@ -11,9 +11,8 @@
 #include <ctime>
 #include <cmath>
 
-// ============================================================================
-// Terminal UI
-// ============================================================================
+
+
 namespace term {
 inline void clear(){ std::cout << "\x1b[2J\x1b[H"; }
 inline std::string bold(const std::string& s){ return "\x1b[1m"+s+"\x1b[0m"; }
@@ -31,9 +30,7 @@ inline void println_center(const std::string& s){
 }
 } // namespace term
 
-// ============================================================================
-// Teclado (raw no bloqueante)
-// ============================================================================
+
 namespace keys {
 enum Key { NONE=0, ENTER, UP, DOWN, LEFT, RIGHT, QUIT, W, A, S, D, NUM1, NUM2, NUM3, NUM4 };
 
@@ -78,9 +75,7 @@ inline Key read(){
 }
 } // namespace keys
 
-// ============================================================================
-// Pantallas simples
-// ============================================================================
+
 void screen_wait_anykey(const std::string& title, const std::vector<std::string>& lines){
     term::clear();
     term::println_center(term::bold(title)); std::cout << "\n";
@@ -144,7 +139,7 @@ struct GameState {
     int houseX=0, houseY=0, doorY=0, doorX1=0, doorX2=0;
 
     GameState(){
-        // Mapa estilo clásico
+        // Mapa estilo clásico (simétrico)
         maze_base = {
 "############################",
 "#............##............#",
@@ -177,18 +172,18 @@ struct GameState {
         maze_live = maze_base;
         H=(int)maze_base.size(); W=(int)maze_base[0].size();
 
-        // Rellenar espacios en LIVE como puntos
+        // llenar espacios con puntos
         for(int y=0;y<H;y++) for(int x=0;x<W;x++)
             if(maze_live[y][x]==' ') maze_live[y][x]='.';
 
-        // Contar comestibles
+        // contar tokens
         tokens=0;
         for(auto &row: maze_live) for(char c: row) if(c=='.'||c=='P') tokens++;
 
-        // Posiciones iniciales
+        // Pac-Man
         px=1; py=1; pdx=1; pdy=0;
 
-        // Detectar puerta/casa
+        // detectar puerta/casa
         for(int y=0;y<H;y++){
             for(int x=0;x<W;x++){
                 if(maze_base[y][x]==DOOR){
@@ -200,6 +195,21 @@ struct GameState {
                 }
             }
         }
+
+        // ----------- quitar puntos en y alrededor de la casa ----------
+        auto clear_dot=[&](int X,int Y){
+            if(Y>=0&&Y<H&&X>=0&&X<W){
+                if(maze_live[Y][X]=='.' || maze_live[Y][X]=='P'){
+                    maze_live[Y][X]=' ';
+                    --tokens;
+                }
+            }
+        };
+        for(int y=houseY-2; y<=houseY+2; ++y)
+            for(int x=doorX1-2; x<=doorX2+2; ++x)
+                clear_dot(x,y);
+        // también limpia el propio corredor horizontal de la puerta
+        for(int x=doorX1-3; x<=doorX2+3; ++x) clear_dot(x,doorY);
 
         // Fantasmas con salida escalonada
         blinky={"Blinky",houseX,houseY,0,0,31,true,10};
@@ -214,11 +224,11 @@ struct GameState {
     inline bool is_wall(int x,int y) const { return maze_base[y][x]==WALL; }
     inline bool is_door(int x,int y) const { return maze_base[y][x]==DOOR; }
     inline bool solid_for_pacman(int x,int y) const { if(is_wall(x,y)) return true; if(is_door(x,y)) return true; return false; }
-    inline bool solid_for_ghost (int x,int y) const { if(is_wall(x,y)) return true; /* puerta sí */ return false; }
+    inline bool solid_for_ghost (int x,int y) const { if(is_wall(x,y)) return true; /* los fantasmas sí cruzan puerta */ return false; }
 };
 
 // ============================================================================
-// Render (AHORA prioriza maze_live, e imprime ' ' si live==' ')
+// Render
 // ============================================================================
 static inline std::string color_cell(char c){
     switch(c){
@@ -226,23 +236,23 @@ static inline std::string color_cell(char c){
         case '.': return "\033[37m.\033[0m"; // punto
         case 'P': return "\033[32mP\033[0m"; // power
         case '-': return "\033[36m-\033[0m"; // puerta
-        case ' ': return " ";               // vacío (punto/power comido)  <-- CLAVE
+        case ' ': return " ";               // vacío
         default:  return std::string(1,c);
     }
 }
-static inline std::string ghost_symbol(const GameState::Ghost& g,bool frightened){
-    if(frightened) return "\033[34mF\033[0m";             // azul en frightened
-    return "\033["+std::to_string(g.color)+"mF\033[0m";   // color propio
+static inline std::string ghost_symbol(int ansiColor, bool frightened){
+    if(frightened) return "\033[34mF\033[0m"; // azul cuando huyen
+    return "\033["+std::to_string(ansiColor)+"mF\033[0m";
 }
 static inline std::string ghost_at(const GameState& s,int x,int y){
-    auto chk=[&](const GameState::Ghost& g){
-        if(!g.inHouse && g.x==x && g.y==y) return ghost_symbol(g, s.power);
-        return std::string();
+    auto gstr = [&](const GameState::Ghost& g)->std::string{
+        if(!g.inHouse && g.x==x && g.y==y) return ghost_symbol(g.color, s.power);
+        return {};
     };
-    std::string r=chk(s.blinky); if(!r.empty()) return r;
-    r=chk(s.pinky);  if(!r.empty()) return r;
-    r=chk(s.inky);   if(!r.empty()) return r;
-    r=chk(s.clyde);  return r;
+    std::string r=gstr(s.blinky); if(!r.empty()) return r;
+    r=gstr(s.pinky);  if(!r.empty()) return r;
+    r=gstr(s.inky);   if(!r.empty()) return r;
+    r=gstr(s.clyde);  return r;
 }
 static inline void draw_hud(const GameState& s){
     std::string hud="Puntos: "+std::to_string(s.score)+" | Vidas: "+std::to_string(s.lives);
@@ -265,12 +275,11 @@ static void render(const GameState& s){
                 if(!gh.empty()){
                     line += gh;
                 } else {
-                    // PRIORIDAD: live primero (., P, ' ')
                     char live = s.maze_live[y][x];
                     if(live=='.' || live=='P' || live==' '){
-                        line += color_cell(live);       // <-- imprimimos ' ' si fue comido
+                        line += color_cell(live);
                     } else {
-                        line += color_cell(s.maze_base[y][x]); // paredes/puerta/otros
+                        line += color_cell(s.maze_base[y][x]);
                     }
                 }
             }
@@ -286,9 +295,8 @@ static void render(const GameState& s){
 // ============================================================================
 static inline void eat_cell(GameState& s,int x,int y){
     char &c = s.maze_live[y][x];
-    if(c==TOKEN){ s.score+=10; s.tokens--; c=EMPTY; }      // ← deja ' '
-    else if(c==POWER){ s.score+=50; s.tokens--; c=EMPTY;   // ← deja ' '
-                       s.power=true; s.powerTimer=220; }
+    if(c==TOKEN){ s.score+=10; s.tokens--; c=EMPTY; }
+    else if(c==POWER){ s.score+=50; s.tokens--; c=EMPTY; s.power=true; s.powerTimer=220; }
 }
 static inline void move_pacman(GameState& s,int dx,int dy){
     int nx=s.px+dx, ny=s.py+dy; s.wrap(nx,ny);
@@ -298,9 +306,7 @@ static inline void move_pacman(GameState& s,int dx,int dy){
     }
 }
 
-// ============================================================================
-// IA Fantasmas (targets y movimiento)
-// ============================================================================
+
 static inline int dist2(int ax,int ay,int bx,int by){ int dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; }
 
 static inline void compute_target(const GameState& s,
@@ -309,7 +315,7 @@ static inline void compute_target(const GameState& s,
                                   int &tx, int &ty)
 {
     if(s.power){
-        // Huyen: esquina alejada de Pac-Man
+        // Huyen: eligen entre cuatro esquinas la más alejada de Pac-Man
         int cands[4][2]={{1,1},{s.W-2,1},{1,s.H-2},{s.W-2,s.H-2}};
         int best=-1e9; tx=1; ty=1;
         for(auto &c : cands){
@@ -329,14 +335,11 @@ static inline void compute_target(const GameState& s,
         ty=std::max(0,std::min(s.H-1,ty)); return;
     }
     if(me.name=="Clyde"){
-    int d=dist2(me.x,me.y,s.px,s.py);
-    if(d>64){ 
-        tx=s.px; ty=s.py;   // usa correctamente py
-    } else { 
-        tx=1; ty=s.H-2; 
+        int d=dist2(me.x,me.y,s.px,s.py);
+        if(d>64){ tx=s.px; ty=s.py; }
+        else { tx=1; ty=s.H-2; }
+        return;
     }
-    return;
-}
     tx=s.px; ty=s.py;
 }
 
@@ -351,16 +354,16 @@ static inline void step_towards(GameState& s, GameState::Ghost& g, int tx, int t
     int best=1e9, bdx=0, bdy=0;
     for(auto &d: DIRS){
         int ndx=d[0], ndy=d[1];
-        if(ndx==-g.dx && ndy==-g.dy) continue; // evitar reversa inmediata
+        if(ndx==-g.dx && ndy==-g.dy) continue; // evita reversa inmediata
         if(!can_move_ghost(s,g,ndx,ndy)) continue;
         int nx=g.x+ndx, ny=g.y+ndy; s.wrap(nx,ny);
         int dd=dist2(nx,ny,tx,ty);
         if(dd<best){ best=dd; bdx=ndx; bdy=ndy; }
     }
     if(best==1e9){
-        // Reversa si es la única
+        // sin opciones, intenta reversa
         if(can_move_ghost(s,g,-g.dx,-g.dy)){ g.x-=g.dx; g.y-=g.dy; g.dx=-g.dx; g.dy=-g.dy; return; }
-        // O cualquier válida
+        // o cualquier válida
         for(auto &d: DIRS){ if(can_move_ghost(s,g,d[0],d[1])){ g.x+=d[0]; g.y+=d[1]; g.dx=d[0]; g.dy=d[1]; return; } }
         return;
     }
@@ -374,7 +377,7 @@ static inline void ghost_tick_ai(GameState& s, GameState::Ghost& g){
         if(g.y > s.doorY){
             int ny=g.y-1; if(!s.solid_for_ghost(g.x,ny)){ g.y--; return; }
         }
-        g.inHouse=false; g.dx=1; g.dy=0; // ya fuera
+        g.inHouse=false; g.dx=1; g.dy=0; // fuera
     }
     int tx=0, ty=0; compute_target(s,s.blinky,g,tx,ty);
     step_towards(s,g,tx,ty);
@@ -389,7 +392,8 @@ static inline void handle_collisions(GameState& s){
         if(s.px==g.x && s.py==g.y){
             if(s.power){
                 s.score+=200;
-                g.inHouse=true; g.x=s.houseX; g.y=s.houseY; g.dx=g.dy=0; g.release=60;
+                // revive rápido y ya no asustado
+                g.inHouse=true; g.x=s.houseX; g.y=s.houseY; g.dx=g.dy=0; g.release=10;
             }else{
                 s.lives--;
                 s.px=1; s.py=1; s.pdx=1; s.pdy=0;
@@ -397,11 +401,15 @@ static inline void handle_collisions(GameState& s){
         }
     };
     touch(s.blinky); touch(s.pinky); touch(s.inky); touch(s.clyde);
-    if(s.power){ s.powerTimer--; if(s.powerTimer<=0) s.power=false; }
+
+    if(s.power){
+        s.powerTimer--;
+        if(s.powerTimer<=0) s.power=false;
+    }
 }
 
 // ============================================================================
-// Game loop con modos (modo 3: Blinky humano por WASD)
+// Loop de juego con modos
 // ============================================================================
 enum GameMode { MODE_1=0, MODE_2=1, MODE_3=2 };
 static int TICK_US=90000;
@@ -435,7 +443,7 @@ static void game_loop(GameState& s, GameMode mode){
             }
         }
 
-        // IA para fantasmas (si Blinky es humano, no moverlo por IA)
+        // IA para fantasmas
         if(!blinky_human) ghost_tick_ai(s,s.blinky);
         ghost_tick_ai(s,s.pinky);
         ghost_tick_ai(s,s.inky);
@@ -447,10 +455,10 @@ static void game_loop(GameState& s, GameMode mode){
     }
 
     // Resultado
-    term::println_center("");
-    if(s.tokens==0) term::println_center(term::bold("¡Has ganado!"));
-    else if(s.lives<=0) term::println_center(term::bold("Game Over"));
-    else if(s.stop) term::println_center(term::bold("Has regresado al menú"));
+    std::cout << "\n";
+    if(s.tokens==0)      term::println_center(term::bold("¡Has ganado!"));
+    else if(s.lives<=0)  term::println_center(term::bold("Game Over"));
+    else if(s.stop)      term::println_center(term::bold("Has regresado al menú"));
 
     term::println_center("Puntaje final: "+std::to_string(s.score));
     std::ofstream out("scores.txt", std::ios::app);
@@ -463,11 +471,11 @@ static void game_loop(GameState& s, GameMode mode){
 struct MenuItem { std::string label; std::function<void()> action; };
 
 void draw_title_ascii(){
-  term::println_center(term::bold(" __            _  _              "));
-  term::println_center(term::bold("|  _ \\ _ _  _|  \\/  | _ _ _ __   "));
-  term::println_center(term::bold("| |) / _` |/ _| |\\/| |/ ` | ' \\  "));
-  term::println_center(term::bold("|  _/ (| | (_| |  | | (| | | | | "));
-  term::println_center(term::bold("||   \\,|\\_||  ||\\_,|| || "));
+  term::println_center(term::bold(" ____            __  __              "));
+  term::println_center(term::bold("|  _ \\ __ _  ___|  \\/  | __ _ _ __   "));
+  term::println_center(term::bold("| |_) / _` |/ __| |\\/| |/ _` | '_ \\  "));
+  term::println_center(term::bold("|  __/ (_| | (__| |  | | (_| | | | | "));
+  term::println_center(term::bold("|_|   \\__,_|\\___|_|  |_|\\__,_|_| |_| "));
   term::println_center(term::dim ("Proyecto Pac-Man – Fase 3 (Terminal)"));
 }
 void draw_menu(const std::vector<MenuItem>& items,int selected){
